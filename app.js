@@ -1,4 +1,4 @@
-import { db, doc, getDoc, setDoc, deleteDoc, serverTimestamp, collection, getDocs } from "./firebase.js";
+import { db, doc, getDoc, setDoc, deleteDoc, serverTimestamp, collection, getDocs, addDoc } from "./firebase.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -12,6 +12,11 @@ const searchEl = $("search");
 const statsBody = $("statsBody");
 const totalsPill = $("totalsPill");
 const statsTable = $("statsTable");
+const teamTextEl = document.getElementById("teamText");
+const teamResultEl = document.getElementById("teamResult");
+const importTeamBtn = document.getElementById("importTeamBtn");
+const teamStatusEl = document.getElementById("teamStatus");
+
 
 let frenchNameMap = null;
 let currentSort = { key: "usage", dir: "desc" };
@@ -19,6 +24,9 @@ let statsCache = [];
 
 function setStatus(msg) {
   if (statusEl) statusEl.textContent = msg;
+}
+function setTeamStatus(msg) {
+  if (teamStatusEl) teamStatusEl.textContent = msg;
 }
 
 function showdownToKey(name) {
@@ -38,7 +46,7 @@ async function loadFrenchPokemonNames() {
   if (frenchNameMap) return frenchNameMap;
 
   setStatus("Chargement des noms français…");
-  const res = await fetch("./pokemon-fr.json", { cache: "no-store" });
+  const res = await fetch("/pokemon-fr.json", { cache: "no-store" });
 
   if (!res.ok) {
     throw new Error(`Impossible de charger pokemon-fr.json (${res.status})`);
@@ -48,6 +56,48 @@ async function loadFrenchPokemonNames() {
   setStatus("Noms français chargés ✅");
   return frenchNameMap;
 }
+
+function parseSpeciesFromPaste(text) {
+  // Split by blank lines (Showdown format)
+  const blocks = String(text || "").replace(/\r/g, "").split(/\n{2,}/);
+  const species = [];
+
+  for (const block of blocks) {
+    const lines = block.split("\n").map(l => l.trim()).filter(Boolean);
+    if (!lines.length) continue;
+    if (lines[0].startsWith("===")) continue;
+
+    let first = lines[0];
+
+    // Nickname (Species) @ Item  -> take inside parentheses if present
+    const paren = first.match(/\(([^)]+)\)/);
+    if (paren) first = paren[1];
+
+    // Remove @ item
+    first = first.split("@")[0].trim();
+
+    // Remove trailing gender markers sometimes in text
+    first = first.replace(/\s+\((m|f)\)\s*$/i, "").trim();
+
+    // "Pokémon: X" style
+    const colon = first.match(/(?:species|pokemon|pokémon)\s*[:\-]\s*(.+)/i);
+    if (colon) first = colon[1].trim();
+
+    if (first) species.push(first);
+  }
+
+  // Keep first 6
+  return species.slice(0, 6);
+}
+
+async function translateSpeciesListToFrench(speciesList) {
+  const map = await loadFrenchPokemonNames();
+  return speciesList.map((name) => {
+    const key = showdownToKey(name);
+    return map[key] || name;
+  });
+}
+
 
 function normalizeReplayId(input) {
   const trimmed = (input || "").trim();
@@ -64,6 +114,74 @@ function normalizeReplayId(input) {
 function toJsonUrl(replayId) {
   return `https://replay.pokemonshowdown.com/${replayId}.json`;
 }
+
+async function upsertAggregatesFromTeam(teamMons, result) {
+  // result: "win" | "loss" | "neutral"
+  const aggRef = doc(db, "stats", "aggregate");
+  const snap = await getDoc(aggRef);
+
+  const agg = snap.exists() ? snap.data() : { mons: {}, updatedAt: null };
+  const mons = agg.mons || {};
+
+  const ensure = (name) => {
+    if (!mons[name]) mons[name] = { usage: 0, wins: 0, losses: 0 };
+    return mons[name];
+  };
+
+  for (const m of teamMons) {
+    if (!m) continue;
+    ensure(m).usage += 1;
+    if (result === "win") ensure(m).wins += 1;
+    if (result === "loss") ensure(m).losses += 1;
+  }
+
+  await setDoc(aggRef, { mons, updatedAt: serverTimestamp() }, { merge: true });
+}
+
+async function storeTeamImport(teamMonsFR, teamMonsRaw, result) {
+  // Store as a doc in "teamImports"
+  // (doesn't block duplicates unless you want to)
+  const colRef = collection(db, "teamImports");
+  const payload = {
+    teamFR: teamMonsFR,
+    teamRaw: teamMonsRaw,
+    result, // win/loss/neutral
+    importedAt: serverTimestamp()
+  };
+  await addDoc(colRef, payload);
+}
+
+async function importTeamFromText() {
+  const txt = (teamTextEl?.value || "").trim();
+  if (!txt) {
+    setTeamStatus("Colle une team d’abord.");
+    return;
+  }
+
+  importTeamBtn?.setAttribute("disabled", "true");
+  setTeamStatus("Analyse de la team…");
+
+  try {
+    const rawSpecies = parseSpeciesFromPaste(txt);
+    if (!rawSpecies.length) throw new Error("Aucun Pokémon détecté.");
+
+    const frSpecies = await translateSpeciesListToFrench(rawSpecies);
+    const result = teamResultEl?.value || "neutral";
+
+    await storeTeamImport(frSpecies, rawSpecies, result);
+    await upsertAggregatesFromTeam(frSpecies, result);
+
+    setTeamStatus(`Importé ✅ (${frSpecies.length} Pokémon)`);
+    await loadAggregate();
+  } catch (e) {
+    console.error(e);
+    setTeamStatus(`Erreur : ${e.message}`);
+  } finally {
+    importTeamBtn?.removeAttribute("disabled");
+  }
+}
+
+importTeamBtn?.addEventListener("click", importTeamFromText);
 
 async function extractSpecies(pokeField) {
   let s = (pokeField || "").trim();
@@ -309,33 +427,21 @@ async function resetStats() {
     snap.forEach(d => deletions.push(deleteDoc(doc(db, "replays", d.id))));
     await Promise.all(deletions);
 
+    // 3) Supprime tous les imports de teams (texte)
+    const snapTeams = await getDocs(collection(db, "teamImports"));
+    const deletionsTeams = [];
+    snapTeams.forEach(d => deletionsTeams.push(deleteDoc(doc(db, "teamImports", d.id))));
+    await Promise.all(deletionsTeams);
+
     setStatus("Réinitialisation terminée ✅");
     await loadAggregate();
+    setTeamStatus(""); // optionnel: vide le message team
   } catch (e) {
     console.error(e);
     setStatus(`Erreur : ${e.message}`);
   } finally {
     resetBtn.disabled = false;
   }
-}
-
-
-// Sorting
-if (statsTable) {
-  statsTable.querySelectorAll("thead th").forEach(th => {
-    th.addEventListener("click", () => {
-      const key = th.dataset.sort;
-      if (!key) return;
-
-      if (currentSort.key === key) {
-        currentSort.dir = currentSort.dir === "asc" ? "desc" : "asc";
-      } else {
-        currentSort.key = key;
-        currentSort.dir = (key === "name") ? "asc" : "desc";
-      }
-      renderTable(statsCache);
-    });
-  });
 }
 
 // Events

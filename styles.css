@@ -162,3 +162,28 @@ tbody tr:hover{
   color: rgba(255,255,255,0.45);
   font-size: 13px;
 }
+
+.sep{ border:none; border-top:1px solid rgba(255,255,255,0.10); margin:14px 0; }
+.h3{ margin: 0 0 8px; font-size: 14px; color: rgba(255,255,255,0.75); font-weight: 700; }
+.textarea{
+  width: 100%;
+  min-height: 160px;
+  padding: 12px 12px;
+  border-radius: 14px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.92);
+  outline: none;
+  resize: vertical;
+}
+.textarea:focus{
+  border-color: rgba(110,168,255,0.65);
+  box-shadow: 0 0 0 4px rgba(110,168,255,0.18);
+}
+.select{
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.92);
+}
