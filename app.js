@@ -28,6 +28,13 @@ let nameIndex = null;          // Map normalizeLoose -> "Nom FR"
 let currentSort = { key: "usage", dir: "desc" };
 let statsCache = [];
 
+// --- ICON HASHES STATE
+let ICON_HASHES = null;     // { key: "hex64" }
+let ICON_HASH_KEYS = null;  // Array<[key, BigInt]>
+
+// =======================================================
+// UI helpers
+// =======================================================
 function setStatus(msg) {
   if (statusEl) statusEl.textContent = msg;
 }
@@ -35,7 +42,9 @@ function setTeamStatus(msg) {
   if (teamStatusEl) teamStatusEl.textContent = msg;
 }
 
-// --- Normalisation / keys
+// =======================================================
+// Normalisation / keys
+// =======================================================
 function showdownToKey(name) {
   // Convert Showdown display -> keys like "great-tusk", "mr-mime", "farfetchd"
   return String(name || "")
@@ -66,7 +75,9 @@ function looseToKey(s) {
   return base.replace(/\s+/g, "-");
 }
 
-// --- Load FR map (OPTIONNEL)
+// =======================================================
+// Load FR map (optionnel)
+// =======================================================
 async function loadFrenchPokemonNames() {
   if (frenchNameMap) return frenchNameMap;
 
@@ -82,18 +93,17 @@ async function loadFrenchPokemonNames() {
   }
 }
 
-// --- Build index FR/EN loose -> FR display
+// Build index FR/EN loose -> FR display
 async function buildNameIndex() {
   if (nameIndex) return nameIndex;
 
   const map = await loadFrenchPokemonNames();
   const idx = new Map();
 
-  // Base: toutes les entrées du json (clé -> fr)
   for (const [key, fr] of Object.entries(map)) {
     if (fr) idx.set(normalizeNameLoose(fr), fr);
 
-    // Permet de coller l'EN sous forme "great tusk" (depuis la clé)
+    // Permet "great tusk" depuis la key "great-tusk"
     const spacedKey = String(key).replace(/-/g, " ");
     idx.set(normalizeNameLoose(spacedKey), fr);
   }
@@ -106,7 +116,6 @@ async function buildNameIndex() {
     "pingoléon": "Pingoléon",
     "roitiflam": "Roitiflam",
     "miascarade": "Miascarade",
-    "simia**braz": "Simiabraz", // exemple: retire si inutile
     "simiabraz": "Simiabraz",
     "demeteros": "Démétéros",
     "demétéros": "Démétéros",
@@ -123,7 +132,9 @@ async function buildNameIndex() {
   return idx;
 }
 
-// --- Paste parser (Showdown/PokéPaste)
+// =======================================================
+// Team parsers (paste showdown / 6 lignes)
+// =======================================================
 function parseSpeciesFromPaste(text) {
   const blocks = String(text || "").replace(/\r/g, "").split(/\n{2,}/);
   const species = [];
@@ -135,7 +146,7 @@ function parseSpeciesFromPaste(text) {
 
     let first = lines[0];
 
-    // Nickname (Species) @ Item -> take inside parentheses if present
+    // Nickname (Species) @ Item -> inside parentheses
     const paren = first.match(/\(([^)]+)\)/);
     if (paren) first = paren[1];
 
@@ -155,21 +166,19 @@ function parseSpeciesFromPaste(text) {
   return species.slice(0, 6);
 }
 
-// --- Manual input parser: either 6 lines OR showdown paste
 function parseManualTeamInput(text) {
   const t = String(text || "").replace(/\r/g, "").trim();
   if (!t) return [];
 
-  // Heuristique: si ça ressemble à un paste Showdown, on parse en blocs
-  const looksLikeShowdown = t.includes("@") || t.includes("Ability:") || t.includes("EVs:") || t.includes("- ");
+  const looksLikeShowdown =
+    t.includes("@") || t.includes("Ability:") || t.includes("EVs:") || t.includes("- ");
+
   if (looksLikeShowdown) return parseSpeciesFromPaste(t);
 
-  // Sinon: une ligne = un pokémon
   const lines = t.split("\n").map(x => x.trim()).filter(Boolean);
   return lines.slice(0, 6);
 }
 
-// --- Translate a list (best effort)
 async function bestEffortToFrench(nameList) {
   const map = await loadFrenchPokemonNames();
   const idx = await buildNameIndex();
@@ -180,26 +189,27 @@ async function bestEffortToFrench(nameList) {
   for (const raw of nameList) {
     const rawLoose = normalizeNameLoose(raw);
 
-    // 1) Try index (FR loose & key-derived)
+    // 1) Index (FR loose & key-derived)
     const hit = idx.get(rawLoose);
     if (hit) { recognized.push(hit); continue; }
 
-    // 2) Try showdownToKey -> map
+    // 2) showdownToKey -> map
     const key1 = showdownToKey(raw);
     if (map[key1]) { recognized.push(map[key1]); continue; }
 
-    // 3) Try looseToKey -> map
+    // 3) looseToKey -> map
     const key2 = looseToKey(raw);
     if (map[key2]) { recognized.push(map[key2]); continue; }
 
-    // fallback
     unknown.push(raw);
   }
 
   return { recognized, unknown };
 }
 
-// --- Replay helpers
+// =======================================================
+// Replay helpers
+// =======================================================
 function normalizeReplayId(input) {
   const trimmed = (input || "").trim();
   if (!trimmed) return null;
@@ -211,6 +221,7 @@ function normalizeReplayId(input) {
 
   return null;
 }
+
 function toJsonUrl(replayId) {
   return `https://replay.pokemonshowdown.com/${replayId}.json`;
 }
@@ -219,7 +230,6 @@ async function extractSpecies(pokeField) {
   let s = (pokeField || "").trim();
   if (!s) return "";
 
-  // Remove ", M" / ", F" etc.
   if (s.includes(",")) s = s.split(",")[0].trim();
 
   const map = await loadFrenchPokemonNames();
@@ -288,7 +298,9 @@ async function fetchReplayJson(replayId) {
   return await res.json();
 }
 
-// --- Aggregates
+// =======================================================
+// Aggregates + storage
+// =======================================================
 async function upsertAggregatesFromTeam(teamMons, result) {
   const aggRef = doc(db, "stats", "aggregate");
   const snap = await getDoc(aggRef);
@@ -368,7 +380,9 @@ async function storeReplay(replayId, replayMeta, parsed) {
   return { already: false };
 }
 
-// --- Table
+// =======================================================
+// Table render
+// =======================================================
 function computeRows(monsObj) {
   return Object.entries(monsObj || {}).map(([name, s]) => {
     const usage = s.usage || 0;
@@ -434,7 +448,9 @@ async function loadAggregate() {
   renderTable(statsCache);
 }
 
-// --- Actions
+// =======================================================
+// Actions
+// =======================================================
 async function importTeamFromText() {
   const txt = (teamTextEl?.value || "").trim();
   if (!txt) {
@@ -542,7 +558,320 @@ async function resetStats() {
   }
 }
 
-// --- Sorting
+// =======================================================
+// ICON SCAN (teambuilder-friendly) via sliding window
+// =======================================================
+
+async function loadIconHashes() {
+  if (ICON_HASHES) return ICON_HASHES;
+
+  const candidates = [
+    "./icon-hashes.json",        // même dossier que index.html (Live Server)
+    "/icon-hashes.json",         // racine
+    "./public/icon-hashes.json", // si tu as un dossier public
+  ];
+
+  let lastErr = null;
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+      ICON_HASHES = await res.json();
+      ICON_HASH_KEYS = Object.entries(ICON_HASHES).map(([k, hex]) => [k, BigInt("0x" + hex)]);
+      console.log(`[icon-hashes] loaded ${ICON_HASH_KEYS.length} hashes from ${url}`);
+      return ICON_HASHES;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw new Error(`Impossible de charger icon-hashes.json (${lastErr?.message || "unknown error"})`);
+}
+
+
+function hamming64(a, b) {
+  let x = a ^ b;
+  let c = 0;
+  while (x) { x &= (x - 1n); c++; }
+  return c;
+}
+
+// dHash directement depuis une région du canvas source, sans recrop lourd
+function dHashFromRegion(srcCtx, sx, sy, sw, sh) {
+  const tmp = document.createElement("canvas");
+  tmp.width = 9;
+  tmp.height = 8;
+  const tctx = tmp.getContext("2d", { willReadFrequently: true });
+
+  // mini-resize de la région candidate en 9x8
+  tctx.drawImage(srcCtx.canvas, sx, sy, sw, sh, 0, 0, 9, 8);
+
+  const { data } = tctx.getImageData(0, 0, 9, 8);
+
+  const lum = new Array(9 * 8);
+  for (let i = 0; i < lum.length; i++) {
+    const r = data[i * 4 + 0];
+    const g = data[i * 4 + 1];
+    const b = data[i * 4 + 2];
+    lum[i] = r * 0.299 + g * 0.587 + b * 0.114;
+  }
+
+  let hash = 0n;
+  let bit = 0n;
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const left = lum[y * 9 + x];
+      const right = lum[y * 9 + x + 1];
+      const v = left < right ? 1n : 0n;
+      hash |= (v << bit);
+      bit++;
+    }
+  }
+  return hash;
+}
+
+// Dédup: si deux detections sont proches, on garde la meilleure (dist plus faible)
+function dedupeDetections(dets, radius = 26) {
+  dets.sort((a, b) => a.dist - b.dist);
+
+  const kept = [];
+  for (const d of dets) {
+    const tooClose = kept.some(k => {
+      const dx = (k.cx - d.cx);
+      const dy = (k.cy - d.cy);
+      return (dx * dx + dy * dy) < (radius * radius);
+    });
+    if (!tooClose) kept.push(d);
+  }
+  return kept;
+}
+
+/**
+ * Scan l’image pour trouver des icônes (teambuilder/replay/header).
+ * Retourne un tableau de 6 keys (ou moins si pas assez sûr).
+ */
+// Remplace ENTIÈREMENT ta fonction scanIconsInImage par celle-ci
+async function scanIconsInImage(img, opts = {}) {
+  await loadIconHashes();
+
+  const W = img.naturalWidth || img.width;
+  const H = img.naturalHeight || img.height;
+
+  // Downscale pour vitesse
+  const targetW = opts.targetW ?? 1000;
+  const scale = Math.min(1, targetW / W);
+  const w = Math.max(1, Math.round(W * scale));
+  const h = Math.max(1, Math.round(H * scale));
+
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+
+  // ---- Paramètres "header 6 icons" (Showdown)
+  const iconW = Math.round((opts.iconW ?? 40) * scale);
+  const iconH = Math.round((opts.iconH ?? 30) * scale);
+  const gap = Math.round((opts.gap ?? 6) * scale);          // espace entre icônes (approx)
+  const padX = Math.round((opts.padX ?? 6) * scale);        // padding gauche/droite du bandeau
+  const maxDist = opts.maxDist ?? 14;
+
+  // Zone de recherche verticale (haut de l'image)
+  const yMin = Math.max(0, Math.round((opts.yMinFrac ?? 0.00) * h));
+  const yMax = Math.min(h - iconH - 1, Math.round((opts.yMaxFrac ?? 0.25) * h));
+
+  // Largeur approximative d'une rangée de 6 icônes
+  const rowW = padX * 2 + (iconW * 6) + (gap * 5);
+
+  // On balaye plusieurs X possibles (parce que selon le screen, la rangée n'est pas toujours centrée pareil)
+  // et plusieurs Y pour trouver la "meilleure" rangée.
+  const xCandidates = [];
+  const x0 = Math.max(0, Math.round((w - rowW) / 2));
+  xCandidates.push(x0);
+  xCandidates.push(Math.max(0, x0 - Math.round(40 * scale)));
+  xCandidates.push(Math.max(0, x0 + Math.round(40 * scale)));
+  xCandidates.push(0);
+  xCandidates.push(Math.max(0, w - rowW));
+
+  // Pas vertical (plus petit = plus précis)
+  const yStep = opts.yStep ?? Math.max(2, Math.round(2 * scale));
+
+  // Score: somme des meilleurs dists sur les 6 icônes (plus petit = meilleur)
+  function bestMatchNameAndDist(hash) {
+    let bestName = null;
+    let bestDist = 999;
+    for (const [name, refHash] of ICON_HASH_KEYS) {
+      const d = hamming64(hash, refHash);
+      if (d < bestDist) {
+        bestDist = d;
+        bestName = name;
+        if (bestDist === 0) break;
+      }
+    }
+    return { bestName, bestDist };
+  }
+
+  let best = null;
+
+  for (let y = yMin; y <= yMax; y += yStep) {
+    for (const xBase0 of xCandidates) {
+      let xBase = Math.min(Math.max(0, xBase0), Math.max(0, w - rowW));
+
+      // calcule un score pour cette rangée (6 cases)
+      const matches = [];
+      let total = 0;
+      let okCount = 0;
+
+      for (let i = 0; i < 6; i++) {
+        const sx = xBase + padX + i * (iconW + gap);
+        const sy = y;
+
+        if (sx < 0 || sy < 0 || sx + iconW > w || sy + iconH > h) {
+          matches.push({ name: null, dist: 999 });
+          total += 999;
+          continue;
+        }
+
+        const dh = dHashFromRegion(ctx, sx, sy, iconW, iconH);
+        const { bestName, bestDist } = bestMatchNameAndDist(dh);
+
+        matches.push({ name: bestName, dist: bestDist });
+        total += bestDist;
+        if (bestDist <= maxDist) okCount++;
+      }
+
+      // On exige au moins 5/6 "ok" pour éviter les faux positifs
+      const minOk = opts.minOk ?? 5;
+      if (okCount < minOk) continue;
+
+      if (!best || total < best.total) {
+        best = { xBase, y, total, okCount, matches, iconW, iconH, gap, padX };
+      }
+    }
+  }
+
+  if (!best) return [];
+
+  // On retourne les 6 noms si dist assez ok (sinon [])
+  const out = [];
+  for (const m of best.matches) {
+    if (!m.name || m.dist > maxDist) return [];
+    out.push(m.name);
+  }
+
+  return out;
+}
+
+
+
+function showdownIdToPokeapiKey(id) {
+  const s = String(id || "").toLowerCase();
+
+  // formes régionales (très fréquent)
+  const regional = [
+    ["hisui", "-hisui"],
+    ["alola", "-alola"],
+    ["galar", "-galar"],
+    ["paldea", "-paldea"],
+  ];
+  for (const [suffix, rep] of regional) {
+    if (s.endsWith(suffix) && !s.includes("-")) {
+      return s.slice(0, -suffix.length) + rep;
+    }
+  }
+
+  // Pikachu costumes
+  if (s.startsWith("pikachu") && s !== "pikachu" && !s.includes("-")) {
+    return "pikachu-" + s.slice("pikachu".length);
+  }
+
+  // Paradox mons (Showdown les écrit sans tiret)
+  const paradox = {
+    greattusk: "great-tusk",
+    screamtail: "scream-tail",
+    brutebonnet: "brute-bonnet",
+    fluttermane: "flutter-mane",
+    slitherwing: "slither-wing",
+    sandyshocks: "sandy-shocks",
+    irontreads: "iron-treads",
+    ironbundle: "iron-bundle",
+    ironhands: "iron-hands",
+    ironjugulis: "iron-jugulis",
+    ironmoth: "iron-moth",
+    ironthorns: "iron-thorns",
+    roaringmoon: "roaring-moon",
+    ironvaliant: "iron-valiant",
+    walkingwake: "walking-wake",
+    ironleaves: "iron-leaves",
+    gougingfire: "gouging-fire",
+    ragingbolt: "raging-bolt",
+    ironboulder: "iron-boulder",
+    ironcrown: "iron-crown",
+  };
+  if (paradox[s]) return paradox[s];
+
+  return s; // fallback
+}
+
+
+teamTextEl?.addEventListener("paste", async (e) => {
+  try {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imgItem = Array.from(items).find(it => it.type && it.type.startsWith("image/"));
+    if (!imgItem) return; // texte normal => laisser faire
+
+    e.preventDefault();
+
+    const file = imgItem.getAsFile();
+    if (!file) return;
+
+    setTeamStatus("Analyse de l’image (scan icônes)…");
+
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.src = url;
+
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+
+    URL.revokeObjectURL(url);
+
+    const names = await scanIconsInImage(img, {
+  targetW: 1100,
+  yMaxFrac: 0.22,   // icônes dans le haut
+  maxDist: 14,
+  minOk: 6,         // on veut 6/6 ok sinon on refuse
+  iconW: 40,
+  iconH: 30,
+  gap: 6,
+  padX: 6,
+});
+
+
+
+
+    if (names.length < 6) {
+      setTeamStatus("⚠️ Je n’ai pas réussi à reconnaître 6 icônes. Essaie un screen plus zoomé / plus net (ou recadré sur la rangée d’icônes).");
+      return;
+    }
+
+    // On met les keys dans le textarea (ton pipeline bestEffortToFrench gère derrière)
+    teamTextEl.value = names.map(showdownIdToPokeapiKey).join("\n");
+    setTeamStatus("Icônes reconnues ✅ Clique “Importer la team”.");
+  } catch (err) {
+    console.error(err);
+    setTeamStatus(`Erreur import image : ${err.message}`);
+  }
+});
+
+
+// =======================================================
+// Sorting
+// =======================================================
 if (statsTable) {
   statsTable.querySelectorAll("thead th").forEach(th => {
     th.addEventListener("click", () => {
@@ -560,7 +889,9 @@ if (statsTable) {
   });
 }
 
-// --- Events
+// =======================================================
+// Events
+// =======================================================
 importBtn?.addEventListener("click", importReplay);
 importExampleBtn?.addEventListener("click", () => {
   if (replayUrlEl) replayUrlEl.value = "https://replay.pokemonshowdown.com/gen9ubers-2497048368";
@@ -570,6 +901,8 @@ resetBtn?.addEventListener("click", resetStats);
 searchEl?.addEventListener("input", () => renderTable(statsCache));
 importTeamBtn?.addEventListener("click", importTeamFromText);
 
-// --- Initial
+// =======================================================
+// Initial
+// =======================================================
 setStatus("Chargement des statistiques…");
 loadAggregate().then(() => setStatus("Prêt."));
