@@ -17,7 +17,7 @@ const teamResultEl = document.getElementById("teamResult");
 const importTeamBtn = document.getElementById("importTeamBtn");
 const teamStatusEl = document.getElementById("teamStatus");
 
-
+let totalUsageAll = 0;
 let frenchNameMap = null;
 let currentSort = { key: "usage", dir: "desc" };
 let statsCache = [];
@@ -362,6 +362,7 @@ function renderTable(rows) {
       <tr>
         <td>${escapeHtml(r.name)}</td>
         <td class="num">${r.usage}</td>
+        <td class="num">${r.usagePct == null ? "—" : `${r.usagePct.toFixed(1)}%`}</td>
         <td class="num">${r.wins}</td>
         <td class="num">${r.losses}</td>
         <td class="num ${wrClass}">${wr}</td>
@@ -374,9 +375,20 @@ async function loadAggregate() {
   const aggRef = doc(db, "stats", "aggregate");
   const snap = await getDoc(aggRef);
   const data = snap.exists() ? snap.data() : { mons: {} };
+
   statsCache = computeRows(data.mons || {});
+
+  // total usages (tous Pokémon)
+  totalUsageAll = statsCache.reduce((sum, r) => sum + (r.usage || 0), 0);
+
+  // usage %
+  for (const r of statsCache) {
+    r.usagePct = totalUsageAll > 0 ? (r.usage / totalUsageAll) * 100 : null;
+  }
+
   renderTable(statsCache);
 }
+
 
 async function importReplay() {
   const replayId = normalizeReplayId(replayUrlEl?.value);
