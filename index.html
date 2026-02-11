@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Statistiques des Replays Showdown</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="./logo.png" alt="Ligue RPPLF" class="logo" />
+      <div>
+        <h1>Importation de replays + statistiques d’utilisation</h1>
+        <p class="sub">Importez des replays Pokémon Showdown → usage, victoires et taux de victoire.</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="card">
+      <h2>Importer un replay</h2>
+
+      <div class="row">
+        <input id="replayUrl" class="input" placeholder="Collez l’URL du replay (ex. https://replay.pokemonshowdown.com/gen9ubers-2497048368)" />
+        <button id="importBtn" class="btn">Importer</button>
+      </div>
+
+      <div class="row small">
+        <span id="status" class="status">Prêt.</span>
+      </div>
+
+      <details class="hint">
+        <summary>Qu’est-ce qui est comptabilisé ?</summary>
+        <ul>
+          <li><b>Usage</b> : Pokémon affichés à l’aperçu des équipes (les lignes <code>|poke|</code> dans le journal du replay).</li>
+          <li><b>Taux de victoire</b> : si le replay a un gagnant, tous les Pokémon de l’aperçu de l’équipe gagnante obtiennent une victoire.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="row between">
+        <div>
+          <h2>Statistiques d’utilisation</h2>
+          <p class="sub">Recherchez + cliquez sur les en-têtes de colonnes pour trier.</p>
+        </div>
+        <div class="pill" id="totalsPill">0 Pokémon</div>
+      </div>
+
+      <div class="row">
+        <input id="search" class="input" placeholder="Rechercher un Pokémon…" />
+        <button id="refreshBtn" class="btn ghost">Actualiser</button>
+        <button id="resetBtn" class="btn danger ghost">Réinitialiser</button>
+      </div>
+
+      <div class="tableWrap">
+        <table id="statsTable">
+          <thead>
+            <tr>
+              <th data-sort="name">Pokémon</th>
+              <th data-sort="usage" class="num">Utilisation</th>
+              <th data-sort="wins" class="num">Victoires</th>
+              <th data-sort="losses" class="num">Défaites</th>
+              <th data-sort="winrate" class="num">Victoire %</th>
+            </tr>
+          </thead>
+          <tbody id="statsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Hasbii</span>
+  </footer>
+
+  <script type="module" src="firebase.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
