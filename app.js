@@ -1,7 +1,11 @@
-import { db, doc, getDoc, setDoc, deleteDoc, serverTimestamp, collection, getDocs, addDoc } from "./firebase.js";
+import {
+  db, doc, getDoc, setDoc, deleteDoc,
+  serverTimestamp, collection, getDocs, addDoc
+} from "./firebase.js";
 
 const $ = (id) => document.getElementById(id);
 
+// --- DOM
 const replayUrlEl = $("replayUrl");
 const importBtn = $("importBtn");
 const importExampleBtn = $("importExampleBtn");
@@ -12,13 +16,15 @@ const searchEl = $("search");
 const statsBody = $("statsBody");
 const totalsPill = $("totalsPill");
 const statsTable = $("statsTable");
-const teamTextEl = document.getElementById("teamText");
-const teamResultEl = document.getElementById("teamResult");
-const importTeamBtn = document.getElementById("importTeamBtn");
-const teamStatusEl = document.getElementById("teamStatus");
 
+const teamTextEl = $("teamText");
+const teamResultEl = $("teamResult");
+const importTeamBtn = $("importTeamBtn");
+const teamStatusEl = $("teamStatus");
 
-let frenchNameMap = null;
+// --- STATE
+let frenchNameMap = null;      // { pokeapiKey: "Nom FR" }
+let nameIndex = null;          // Map normalizeLoose -> "Nom FR"
 let currentSort = { key: "usage", dir: "desc" };
 let statsCache = [];
 
@@ -29,9 +35,10 @@ function setTeamStatus(msg) {
   if (teamStatusEl) teamStatusEl.textContent = msg;
 }
 
+// --- Normalisation / keys
 function showdownToKey(name) {
   // Convert Showdown display -> keys like "great-tusk", "mr-mime", "farfetchd"
-  return name
+  return String(name || "")
     .toLowerCase()
     .replace(/\./g, "")       // Mr. Mime -> mr mime
     .replace(/'/g, "")        // Farfetch'd -> farfetchd
@@ -42,23 +49,82 @@ function showdownToKey(name) {
     .replace(/\s+/g, "-");    // Great Tusk -> great-tusk
 }
 
+function normalizeNameLoose(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")   // enlève accents
+    .replace(/[^a-z0-9]+/g, " ")       // garde lettres/chiffres
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function looseToKey(s) {
+  const base = normalizeNameLoose(s)
+    .replace(/\bmr\b/g, "mr")
+    .replace(/\btype 0\b/g, "type null");
+  return base.replace(/\s+/g, "-");
+}
+
+// --- Load FR map (OPTIONNEL)
 async function loadFrenchPokemonNames() {
   if (frenchNameMap) return frenchNameMap;
 
-  setStatus("Chargement des noms français…");
-  const res = await fetch("/pokemon-fr.json", { cache: "no-store" });
-
-  if (!res.ok) {
-    throw new Error(`Impossible de charger pokemon-fr.json (${res.status})`);
+  try {
+    const res = await fetch("/pokemon-fr.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    frenchNameMap = await res.json();
+    return frenchNameMap;
+  } catch (e) {
+    console.warn("pokemon-fr.json non dispo (fallback).", e);
+    frenchNameMap = {}; // fallback vide
+    return frenchNameMap;
   }
-
-  frenchNameMap = await res.json();
-  setStatus("Noms français chargés ✅");
-  return frenchNameMap;
 }
 
+// --- Build index FR/EN loose -> FR display
+async function buildNameIndex() {
+  if (nameIndex) return nameIndex;
+
+  const map = await loadFrenchPokemonNames();
+  const idx = new Map();
+
+  // Base: toutes les entrées du json (clé -> fr)
+  for (const [key, fr] of Object.entries(map)) {
+    if (fr) idx.set(normalizeNameLoose(fr), fr);
+
+    // Permet de coller l'EN sous forme "great tusk" (depuis la clé)
+    const spacedKey = String(key).replace(/-/g, " ");
+    idx.set(normalizeNameLoose(spacedKey), fr);
+  }
+
+  // Alias/typos FR fréquents (tu peux en ajouter)
+  const aliases = {
+    "dracaufeu": "Dracaufeu",
+    "lokhlass": "Lokhlass",
+    "pingoleon": "Pingoléon",
+    "pingoléon": "Pingoléon",
+    "roitiflam": "Roitiflam",
+    "miascarade": "Miascarade",
+    "simia**braz": "Simiabraz", // exemple: retire si inutile
+    "simiabraz": "Simiabraz",
+    "demeteros": "Démétéros",
+    "demétéros": "Démétéros",
+    "electhor": "Électhor",
+    "électhor": "Électhor",
+    "farfurex": "Farfurex"
+  };
+
+  for (const [k, v] of Object.entries(aliases)) {
+    idx.set(normalizeNameLoose(k), v);
+  }
+
+  nameIndex = idx;
+  return idx;
+}
+
+// --- Paste parser (Showdown/PokéPaste)
 function parseSpeciesFromPaste(text) {
-  // Split by blank lines (Showdown format)
   const blocks = String(text || "").replace(/\r/g, "").split(/\n{2,}/);
   const species = [];
 
@@ -69,7 +135,7 @@ function parseSpeciesFromPaste(text) {
 
     let first = lines[0];
 
-    // Nickname (Species) @ Item  -> take inside parentheses if present
+    // Nickname (Species) @ Item -> take inside parentheses if present
     const paren = first.match(/\(([^)]+)\)/);
     if (paren) first = paren[1];
 
@@ -86,19 +152,54 @@ function parseSpeciesFromPaste(text) {
     if (first) species.push(first);
   }
 
-  // Keep first 6
   return species.slice(0, 6);
 }
 
-async function translateSpeciesListToFrench(speciesList) {
-  const map = await loadFrenchPokemonNames();
-  return speciesList.map((name) => {
-    const key = showdownToKey(name);
-    return map[key] || name;
-  });
+// --- Manual input parser: either 6 lines OR showdown paste
+function parseManualTeamInput(text) {
+  const t = String(text || "").replace(/\r/g, "").trim();
+  if (!t) return [];
+
+  // Heuristique: si ça ressemble à un paste Showdown, on parse en blocs
+  const looksLikeShowdown = t.includes("@") || t.includes("Ability:") || t.includes("EVs:") || t.includes("- ");
+  if (looksLikeShowdown) return parseSpeciesFromPaste(t);
+
+  // Sinon: une ligne = un pokémon
+  const lines = t.split("\n").map(x => x.trim()).filter(Boolean);
+  return lines.slice(0, 6);
 }
 
+// --- Translate a list (best effort)
+async function bestEffortToFrench(nameList) {
+  const map = await loadFrenchPokemonNames();
+  const idx = await buildNameIndex();
 
+  const recognized = [];
+  const unknown = [];
+
+  for (const raw of nameList) {
+    const rawLoose = normalizeNameLoose(raw);
+
+    // 1) Try index (FR loose & key-derived)
+    const hit = idx.get(rawLoose);
+    if (hit) { recognized.push(hit); continue; }
+
+    // 2) Try showdownToKey -> map
+    const key1 = showdownToKey(raw);
+    if (map[key1]) { recognized.push(map[key1]); continue; }
+
+    // 3) Try looseToKey -> map
+    const key2 = looseToKey(raw);
+    if (map[key2]) { recognized.push(map[key2]); continue; }
+
+    // fallback
+    unknown.push(raw);
+  }
+
+  return { recognized, unknown };
+}
+
+// --- Replay helpers
 function normalizeReplayId(input) {
   const trimmed = (input || "").trim();
   if (!trimmed) return null;
@@ -110,78 +211,9 @@ function normalizeReplayId(input) {
 
   return null;
 }
-
 function toJsonUrl(replayId) {
   return `https://replay.pokemonshowdown.com/${replayId}.json`;
 }
-
-async function upsertAggregatesFromTeam(teamMons, result) {
-  // result: "win" | "loss" | "neutral"
-  const aggRef = doc(db, "stats", "aggregate");
-  const snap = await getDoc(aggRef);
-
-  const agg = snap.exists() ? snap.data() : { mons: {}, updatedAt: null };
-  const mons = agg.mons || {};
-
-  const ensure = (name) => {
-    if (!mons[name]) mons[name] = { usage: 0, wins: 0, losses: 0 };
-    return mons[name];
-  };
-
-  for (const m of teamMons) {
-    if (!m) continue;
-    ensure(m).usage += 1;
-    if (result === "win") ensure(m).wins += 1;
-    if (result === "loss") ensure(m).losses += 1;
-  }
-
-  await setDoc(aggRef, { mons, updatedAt: serverTimestamp() }, { merge: true });
-}
-
-async function storeTeamImport(teamMonsFR, teamMonsRaw, result) {
-  // Store as a doc in "teamImports"
-  // (doesn't block duplicates unless you want to)
-  const colRef = collection(db, "teamImports");
-  const payload = {
-    teamFR: teamMonsFR,
-    teamRaw: teamMonsRaw,
-    result, // win/loss/neutral
-    importedAt: serverTimestamp()
-  };
-  await addDoc(colRef, payload);
-}
-
-async function importTeamFromText() {
-  const txt = (teamTextEl?.value || "").trim();
-  if (!txt) {
-    setTeamStatus("Colle une team d’abord.");
-    return;
-  }
-
-  importTeamBtn?.setAttribute("disabled", "true");
-  setTeamStatus("Analyse de la team…");
-
-  try {
-    const rawSpecies = parseSpeciesFromPaste(txt);
-    if (!rawSpecies.length) throw new Error("Aucun Pokémon détecté.");
-
-    const frSpecies = await translateSpeciesListToFrench(rawSpecies);
-    const result = teamResultEl?.value || "neutral";
-
-    await storeTeamImport(frSpecies, rawSpecies, result);
-    await upsertAggregatesFromTeam(frSpecies, result);
-
-    setTeamStatus(`Importé ✅ (${frSpecies.length} Pokémon)`);
-    await loadAggregate();
-  } catch (e) {
-    console.error(e);
-    setTeamStatus(`Erreur : ${e.message}`);
-  } finally {
-    importTeamBtn?.removeAttribute("disabled");
-  }
-}
-
-importTeamBtn?.addEventListener("click", importTeamFromText);
 
 async function extractSpecies(pokeField) {
   let s = (pokeField || "").trim();
@@ -192,8 +224,7 @@ async function extractSpecies(pokeField) {
 
   const map = await loadFrenchPokemonNames();
   const key = showdownToKey(s);
-
-  return map[key] || s; // fallback to original if missing
+  return map[key] || s;
 }
 
 async function parseReplayLog(logText) {
@@ -253,12 +284,41 @@ async function parseReplayLog(logText) {
 async function fetchReplayJson(replayId) {
   const url = toJsonUrl(replayId);
   const res = await fetch(url);
+  if (!res.ok) throw new Error(`Échec de récupération du replay JSON (${res.status})`);
+  return await res.json();
+}
 
-  if (!res.ok) {
-    throw new Error(`Échec de récupération du replay JSON (${res.status})`);
+// --- Aggregates
+async function upsertAggregatesFromTeam(teamMons, result) {
+  const aggRef = doc(db, "stats", "aggregate");
+  const snap = await getDoc(aggRef);
+
+  const agg = snap.exists() ? snap.data() : { mons: {}, updatedAt: null };
+  const mons = agg.mons || {};
+
+  const ensure = (name) => {
+    if (!mons[name]) mons[name] = { usage: 0, wins: 0, losses: 0 };
+    return mons[name];
+  };
+
+  for (const m of teamMons) {
+    if (!m) continue;
+    ensure(m).usage += 1;
+    if (result === "win") ensure(m).wins += 1;
+    if (result === "loss") ensure(m).losses += 1;
   }
 
-  return await res.json();
+  await setDoc(aggRef, { mons, updatedAt: serverTimestamp() }, { merge: true });
+}
+
+async function storeTeamImport(teamMonsFR, teamMonsRaw, result) {
+  const colRef = collection(db, "teamImports");
+  await addDoc(colRef, {
+    teamFR: teamMonsFR,
+    teamRaw: teamMonsRaw,
+    result,
+    importedAt: serverTimestamp()
+  });
 }
 
 async function upsertAggregatesFromReplay(parsed) {
@@ -291,9 +351,7 @@ async function storeReplay(replayId, replayMeta, parsed) {
   const replayRef = doc(db, "replays", replayId);
   const snap = await getDoc(replayRef);
 
-  if (snap.exists()) {
-    return { already: true };
-  }
+  if (snap.exists()) return { already: true };
 
   await setDoc(replayRef, {
     replayId,
@@ -310,6 +368,7 @@ async function storeReplay(replayId, replayMeta, parsed) {
   return { already: false };
 }
 
+// --- Table
 function computeRows(monsObj) {
   return Object.entries(monsObj || {}).map(([name, s]) => {
     const usage = s.usage || 0;
@@ -350,7 +409,6 @@ function renderTable(rows) {
   });
 
   if (totalsPill) totalsPill.textContent = `${filtered.length} Pokémon`;
-
   if (!statsBody) return;
 
   statsBody.innerHTML = filtered.map(r => {
@@ -376,6 +434,46 @@ async function loadAggregate() {
   renderTable(statsCache);
 }
 
+// --- Actions
+async function importTeamFromText() {
+  const txt = (teamTextEl?.value || "").trim();
+  if (!txt) {
+    setTeamStatus("Colle une team d’abord.");
+    return;
+  }
+
+  importTeamBtn?.setAttribute("disabled", "true");
+  setTeamStatus("Analyse…");
+
+  try {
+    const raw = parseManualTeamInput(txt);
+    if (!raw.length) throw new Error("Aucun Pokémon détecté.");
+
+    const { recognized, unknown } = await bestEffortToFrench(raw);
+    if (recognized.length === 0) {
+      throw new Error("Aucun Pokémon reconnu. Vérifie l’orthographe.");
+    }
+
+    const result = teamResultEl?.value || "neutral";
+
+    await storeTeamImport(recognized, raw, result);
+    await upsertAggregatesFromTeam(recognized, result);
+
+    setTeamStatus(
+      unknown.length
+        ? `✅ Importé: ${recognized.length}. ⚠️ Non reconnus: ${unknown.join(", ")}`
+        : `✅ Importé: ${recognized.length} Pokémon`
+    );
+
+    await loadAggregate();
+  } catch (e) {
+    console.error(e);
+    setTeamStatus(`Erreur : ${e.message}`);
+  } finally {
+    importTeamBtn?.removeAttribute("disabled");
+  }
+}
+
 async function importReplay() {
   const replayId = normalizeReplayId(replayUrlEl?.value);
   if (!replayId) {
@@ -387,7 +485,6 @@ async function importReplay() {
   setStatus(`Récupération de ${replayId}…`);
 
   try {
-    // Ensure FR map loaded early (better UX)
     await loadFrenchPokemonNames();
 
     const replayJson = await fetchReplayJson(replayId);
@@ -418,24 +515,25 @@ async function resetStats() {
   try {
     setStatus("Réinitialisation en cours…");
 
-    // 1) Supprime l'agrégat
     await deleteDoc(doc(db, "stats", "aggregate"));
 
-    // 2) Supprime tous les replays importés
     const snap = await getDocs(collection(db, "replays"));
     const deletions = [];
     snap.forEach(d => deletions.push(deleteDoc(doc(db, "replays", d.id))));
     await Promise.all(deletions);
 
-    // 3) Supprime tous les imports de teams (texte)
     const snapTeams = await getDocs(collection(db, "teamImports"));
     const deletionsTeams = [];
     snapTeams.forEach(d => deletionsTeams.push(deleteDoc(doc(db, "teamImports", d.id))));
     await Promise.all(deletionsTeams);
 
+    // Reset caches too
+    nameIndex = null;
+    frenchNameMap = null;
+
     setStatus("Réinitialisation terminée ✅");
     await loadAggregate();
-    setTeamStatus(""); // optionnel: vide le message team
+    setTeamStatus("");
   } catch (e) {
     console.error(e);
     setStatus(`Erreur : ${e.message}`);
@@ -444,15 +542,34 @@ async function resetStats() {
   }
 }
 
-// Events
+// --- Sorting
+if (statsTable) {
+  statsTable.querySelectorAll("thead th").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (!key) return;
+
+      if (currentSort.key === key) {
+        currentSort.dir = currentSort.dir === "asc" ? "desc" : "asc";
+      } else {
+        currentSort.key = key;
+        currentSort.dir = (key === "name") ? "asc" : "desc";
+      }
+      renderTable(statsCache);
+    });
+  });
+}
+
+// --- Events
 importBtn?.addEventListener("click", importReplay);
 importExampleBtn?.addEventListener("click", () => {
-  replayUrlEl.value = "https://replay.pokemonshowdown.com/gen9ubers-2497048368";
+  if (replayUrlEl) replayUrlEl.value = "https://replay.pokemonshowdown.com/gen9ubers-2497048368";
 });
 refreshBtn?.addEventListener("click", loadAggregate);
 resetBtn?.addEventListener("click", resetStats);
 searchEl?.addEventListener("input", () => renderTable(statsCache));
+importTeamBtn?.addEventListener("click", importTeamFromText);
 
-// Initial
+// --- Initial
 setStatus("Chargement des statistiques…");
 loadAggregate().then(() => setStatus("Prêt."));
