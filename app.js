@@ -46,7 +46,9 @@ async function loadFrenchPokemonNames() {
   if (frenchNameMap) return frenchNameMap;
 
   setStatus("Chargement des noms français…");
-  const res = await fetch("/pokemon-fr.json", { cache: "no-store" });
+  const url = new URL("./pokemon-fr.json", import.meta.url);
+  const res = await fetch(url, { cache: "no-store" });
+
 
   if (!res.ok) {
     throw new Error(`Impossible de charger pokemon-fr.json (${res.status})`);
