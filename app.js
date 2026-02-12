@@ -118,12 +118,12 @@ function toJsonUrl(replayId) {
 }
 
 async function upsertAggregatesFromTeam(teamMons, result) {
-  // result: "win" | "loss" | "neutral"
   const aggRef = doc(db, "stats", "aggregate");
   const snap = await getDoc(aggRef);
 
-  const agg = snap.exists() ? snap.data() : { mons: {}, updatedAt: null };
+  const agg = snap.exists() ? snap.data() : { mons: {}, updatedAt: null, totalTeams: 0 };
   const mons = agg.mons || {};
+  const totalTeams = (agg.totalTeams || 0) + 1;
 
   const ensure = (name) => {
     if (!mons[name]) mons[name] = { usage: 0, wins: 0, losses: 0 };
@@ -132,13 +132,15 @@ async function upsertAggregatesFromTeam(teamMons, result) {
 
   for (const m of teamMons) {
     if (!m) continue;
-    ensure(m).usage += 1;
-    if (result === "win") ensure(m).wins += 1;
-    if (result === "loss") ensure(m).losses += 1;
+    const entry = ensure(m);
+    entry.usage += 1;
+    if (result === "win") entry.wins += 1;
+    if (result === "loss") entry.losses += 1;
   }
 
-  await setDoc(aggRef, { mons, updatedAt: serverTimestamp() }, { merge: true });
+  await setDoc(aggRef, { mons, totalTeams, updatedAt: serverTimestamp() }, { merge: true });
 }
+
 
 async function storeTeamImport(teamMonsFR, teamMonsRaw, result) {
   // Store as a doc in "teamImports"
@@ -267,8 +269,9 @@ async function upsertAggregatesFromReplay(parsed) {
   const aggRef = doc(db, "stats", "aggregate");
   const snap = await getDoc(aggRef);
 
-  const agg = snap.exists() ? snap.data() : { mons: {}, updatedAt: null };
+  const agg = snap.exists() ? snap.data() : { mons: {}, updatedAt: null, totalTeams: 0 };
   const mons = agg.mons || {};
+  const totalTeams = (agg.totalTeams || 0) + 2;
 
   const ensure = (name) => {
     if (!mons[name]) mons[name] = { usage: 0, wins: 0, losses: 0 };
@@ -286,7 +289,7 @@ async function upsertAggregatesFromReplay(parsed) {
     for (const m of parsed.p1Team) ensure(m).losses += 1;
   }
 
-  await setDoc(aggRef, { mons, updatedAt: serverTimestamp() }, { merge: true });
+  await setDoc(aggRef, { mons, totalTeams, updatedAt: serverTimestamp() }, { merge: true });
 }
 
 async function storeReplay(replayId, replayMeta, parsed) {
@@ -312,16 +315,21 @@ async function storeReplay(replayId, replayMeta, parsed) {
   return { already: false };
 }
 
-function computeRows(monsObj) {
+function computeRows(monsObj, totalTeams) {
   return Object.entries(monsObj || {}).map(([name, s]) => {
-    const usage = s.usage || 0;
+    const usage = s.usage || 0; // nombre de teams où il apparaît (raw)
     const wins = s.wins || 0;
     const losses = s.losses || 0;
     const totalWL = wins + losses;
+
+    const usagePct = totalTeams > 0 ? (usage / totalTeams) * 100 : null; // SMOGON-LIKE
     const winrate = totalWL > 0 ? (wins / totalWL) * 100 : null;
-    return { name, usage, wins, losses, winrate };
+
+    return { name, usage, usagePct, wins, losses, winrate };
   });
 }
+
+
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -355,39 +363,87 @@ function renderTable(rows) {
 
   if (!statsBody) return;
 
-  statsBody.innerHTML = filtered.map(r => {
-    const wr = r.winrate == null ? "—" : `${r.winrate.toFixed(1)}%`;
-    const wrClass = r.winrate == null ? "" : (r.winrate >= 50 ? "good" : "bad");
-    return `
-      <tr>
-        <td>${escapeHtml(r.name)}</td>
-        <td class="num">${r.usage}</td>
-        <td class="num">${r.usagePct == null ? "—" : `${r.usagePct.toFixed(1)}%`}</td>
-        <td class="num">${r.wins}</td>
-        <td class="num">${r.losses}</td>
-        <td class="num ${wrClass}">${wr}</td>
-      </tr>
-    `;
-  }).join("");
+statsBody.innerHTML = filtered.map(r => {
+  const usagePct = r.usagePct == null ? "—" : `${r.usagePct.toFixed(1)}%`;
+  const wr = r.winrate == null ? "—" : `${r.winrate.toFixed(1)}%`;
+  const wrClass = r.winrate == null ? "" : (r.winrate >= 50 ? "good" : "bad");
+
+  return `
+    <tr>
+      <td class="pokeCell">
+        <span class="pokeName">${escapeHtml(r.name)}</span>
+        <span class="pokeActions">
+          <button class="miniBtn" data-action="inc" data-name="${escapeHtml(r.name)}" title="+1 usage">+</button>
+          <button class="miniBtn" data-action="dec" data-name="${escapeHtml(r.name)}" title="-1 usage">−</button>
+        </span>
+      </td>
+      <td class="num">${usagePct}</td>
+      <td class="num">${r.usage}</td>
+      <td class="num">${r.wins}</td>
+      <td class="num">${r.losses}</td>
+      <td class="num ${wrClass}">${wr}</td>
+    </tr>
+  `;
+}).join("");
 }
+
+async function adjustUsage(name, delta) {
+  const aggRef = doc(db, "stats", "aggregate");
+  const snap = await getDoc(aggRef);
+  if (!snap.exists()) return;
+
+  const data = snap.data();
+  const mons = data.mons || {};
+  const totalTeams = data.totalTeams || 0;
+
+  if (!mons[name]) mons[name] = { usage: 0, wins: 0, losses: 0 };
+
+  const before = mons[name].usage || 0;
+  let after = before + delta;
+
+  // clamp : 0 <= usage <= totalTeams
+  after = Math.max(0, after);
+  if (totalTeams > 0) after = Math.min(totalTeams, after);
+
+  mons[name].usage = after;
+
+  await setDoc(aggRef, { mons, updatedAt: serverTimestamp() }, { merge: true });
+}
+
+statsBody?.addEventListener("click", async (e) => {
+  const btn = e.target?.closest?.("button[data-action][data-name]");
+  if (!btn) return;
+
+  const name = btn.getAttribute("data-name");
+  const action = btn.getAttribute("data-action");
+  const delta = action === "inc" ? 1 : -1;
+
+  btn.disabled = true;
+  try {
+    await adjustUsage(name, delta);
+    await loadAggregate();
+  } catch (err) {
+    console.error(err);
+    setStatus(`Erreur : ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 async function loadAggregate() {
   const aggRef = doc(db, "stats", "aggregate");
   const snap = await getDoc(aggRef);
-  const data = snap.exists() ? snap.data() : { mons: {} };
+  const data = snap.exists() ? snap.data() : { mons: {}, totalTeams: 0 };
 
-  statsCache = computeRows(data.mons || {});
+  const totalTeams = data.totalTeams || 0;
 
-  // total usages (tous Pokémon)
-  totalUsageAll = statsCache.reduce((sum, r) => sum + (r.usage || 0), 0);
+  // optionnel mais hyper clair : afficher le nb de teams
+  if (totalsPill) totalsPill.textContent = `${Object.keys(data.mons || {}).length} Pokémon • ${totalTeams} teams`;
 
-  // usage %
-  for (const r of statsCache) {
-    r.usagePct = totalUsageAll > 0 ? (r.usage / totalUsageAll) * 100 : null;
-  }
-
+  statsCache = computeRows(data.mons || {}, totalTeams);
   renderTable(statsCache);
 }
+
 
 
 async function importReplay() {
