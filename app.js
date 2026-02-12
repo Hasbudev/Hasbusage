@@ -16,11 +16,25 @@ const teamTextEl = document.getElementById("teamText");
 const teamResultEl = document.getElementById("teamResult");
 const importTeamBtn = document.getElementById("importTeamBtn");
 const teamStatusEl = document.getElementById("teamStatus");
+const pokePickerSelectEl = document.getElementById("pokePickerSelect");
+const addPokeBtn = document.getElementById("addPokeBtn");
+const submitManualTeamBtn = document.getElementById("submitManualTeamBtn");
+const manualResultEl = document.getElementById("manualResult");
+const manualTeamChipsEl = document.getElementById("manualTeamChips");
+const manualTeamStatusEl = document.getElementById("manualTeamStatus");
+const pokeSearchEl = document.getElementById("pokeSearch");
 
-let totalUsageAll = 0;
+
 let frenchNameMap = null;
 let currentSort = { key: "usage", dir: "desc" };
 let statsCache = [];
+let manualTeam = [];
+let pickerOptions = []; // [{label, value}]
+
+
+function setManualTeamStatus(msg) {
+  if (manualTeamStatusEl) manualTeamStatusEl.textContent = msg;
+}
 
 function setStatus(msg) {
   if (statusEl) statusEl.textContent = msg;
@@ -337,6 +351,128 @@ function escapeHtml(s) {
   }[c]));
 }
 
+async function fillPokemonPickerSelect() {
+  const map = await loadFrenchPokemonNames();
+  if (!pokePickerSelectEl) return;
+
+  // label EN = key showdown, value = nom FR (ce qu'on stocke)
+  pickerOptions = Object.keys(map).map(k => ({
+    label: k,        // affiché
+    value: map[k],   // stocké (FR)
+    fr: map[k]
+  })).sort((a, b) => a.label.localeCompare(b.label, "en"));
+
+  renderPickerOptions("");
+}
+
+function renderPickerOptions(query) {
+  if (!pokePickerSelectEl) return;
+  const q = (query || "").trim().toLowerCase();
+
+  const shown = !q
+    ? pickerOptions
+    : pickerOptions.filter(o =>
+        o.label.toLowerCase().includes(q) || o.fr.toLowerCase().includes(q)
+      );
+
+  // limite pour éviter 1200 options si tu tapes (optionnel)
+  const limited = q ? shown.slice(0, 200) : shown;
+
+  pokePickerSelectEl.innerHTML =
+    `<option value="" selected disabled>Choose a Pokémon…</option>` +
+    limited.map(o =>
+      `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)} — ${escapeHtml(o.fr)}</option>`
+    ).join("");
+}
+
+pokeSearchEl?.addEventListener("input", () => {
+  renderPickerOptions(pokeSearchEl.value);
+});
+
+
+function renderManualTeam() {
+  if (!manualTeamChipsEl) return;
+
+  manualTeamChipsEl.innerHTML = manualTeam.map((name, idx) => `
+    <span class="chip">
+      ${escapeHtml(name)}
+      <button data-remove="${idx}" title="Retirer">×</button>
+    </span>
+  `).join("");
+}
+
+// Ajouter un pokémon à la team
+addPokeBtn?.addEventListener("click", () => {
+  const picked = (pokePickerSelectEl?.value || "").trim();
+  if (!picked) {
+    setManualTeamStatus("Choisis un Pokémon dans la liste.");
+    return;
+  }
+
+  if (manualTeam.length >= 6) {
+    setManualTeamStatus("Max 6 Pokémon par team.");
+    return;
+  }
+
+  if (manualTeam.includes(picked)) {
+    setManualTeamStatus("Déjà dans la team.");
+    return;
+  }
+
+  manualTeam.push(picked);
+  setManualTeamStatus("");
+  renderManualTeam();
+
+  // reset select
+  if (pokePickerSelectEl) pokePickerSelectEl.selectedIndex = 0;
+});
+
+// Retirer un pokémon
+manualTeamChipsEl?.addEventListener("click", (e) => {
+  const btn = e.target?.closest?.("button[data-remove]");
+  if (!btn) return;
+  const idx = Number(btn.getAttribute("data-remove"));
+  if (!Number.isFinite(idx)) return;
+
+  manualTeam.splice(idx, 1);
+  renderManualTeam();
+});
+
+// Soumettre la team (compte comme +1 team)
+submitManualTeamBtn?.addEventListener("click", async () => {
+  if (!manualTeam.length) {
+    setManualTeamStatus("Ajoute au moins 1 Pokémon.");
+    return;
+  }
+
+  submitManualTeamBtn.setAttribute("disabled", "true");
+  setManualTeamStatus("Ajout de la team…");
+
+  try {
+    const result = manualResultEl?.value || "neutral";
+
+    // On stocke comme un import “team”
+    await storeTeamImport(manualTeam, manualTeam, result);
+    await upsertAggregatesFromTeam(manualTeam, result);
+
+    manualTeam = [];
+renderManualTeam();
+setManualTeamStatus("Team ajoutée ✅");
+
+// OPTIONNEL : reset la recherche + la liste
+if (pokeSearchEl) pokeSearchEl.value = "";
+renderPickerOptions("");
+
+await loadAggregate();
+  } catch (e) {
+    console.error(e);
+    setManualTeamStatus(`Erreur : ${e.message}`);
+  } finally {
+    submitManualTeamBtn.removeAttribute("disabled");
+  }
+});
+
+
 function renderTable(rows) {
   const q = (searchEl?.value || "").trim().toLowerCase();
   let filtered = q
@@ -358,8 +494,6 @@ function renderTable(rows) {
 
     return (av - bv) * mul;
   });
-
-  if (totalsPill) totalsPill.textContent = `${filtered.length} Pokémon`;
 
   if (!statsBody) return;
 
@@ -525,4 +659,10 @@ searchEl?.addEventListener("input", () => renderTable(statsCache));
 
 // Initial
 setStatus("Chargement des statistiques…");
-loadAggregate().then(() => setStatus("Prêt."));
+Promise.all([
+  loadAggregate(),
+  fillPokemonPickerSelect()
+]).then(() => setStatus("Prêt.")).catch((e) => {
+  console.error(e);
+  setStatus(`Erreur : ${e.message}`);
+});

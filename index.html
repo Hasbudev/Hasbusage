@@ -56,6 +56,31 @@
       <span id="teamStatus" class="status"></span>
     </div>
 
+    <section class="card">
+  <h3 class="h3">Ajouter une team manuellement (sélecteur)</h3>
+  <input id="pokeSearch" class="input" placeholder="Rechercher (FR/EN)..." />
+  <div class="row small">
+   <select id="pokePickerSelect" class="select">
+  <option value="" selected disabled>Choisir un Pokémon…</option>
+  </select>
+    <button id="addPokeBtn" class="btn ghost">Ajouter</button>
+
+    <select id="manualResult" class="select">
+      <option value="neutral">Résultat : Neutre</option>
+      <option value="win">Résultat : Victoire</option>
+      <option value="loss">Résultat : Défaite</option>
+    </select>
+
+    <button id="submitManualTeamBtn" class="btn">Ajouter la team</button>
+  </div>
+
+  <div class="row small">
+    <div id="manualTeamChips" class="chips"></div>
+    <span id="manualTeamStatus" class="status"></span>
+  </div>
+
+  <p class="sub">Choisis jusqu’à 6 Pokémon, puis “Ajouter la team” ⇒ +1 team et +1 usage pour chacun.</p>
+</section>
 
     <section class="card">
       <div class="row between">
